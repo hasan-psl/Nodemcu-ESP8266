@@ -1,0 +1,1055 @@
+'*******************************************************************************
+;*  Name    : PIC16F887.BAS                                    
+;*  Author  : CHS_Electronics                                   
+;*  Notice  : Copyright (c) 2013                                
+;*          : All Rights Reserved                               
+;*  Date    : 6/24/2017                                        
+;*  Version : 5.0                                               
+;*  Notes   : Semifinal. Still need to change to a higher memory PIC or maybe                                                  
+;*          : use external memory. Have not found a project in which to use.
+'*******************************************************************************
+;Max Word count available is 8192.  Max EEPROM available is 256 bytes
+;Added commands to control default Oled Module, charge pump control.
+;*******************************************************************************
+;*******************************************************************************
+;*******************************************************************************
+'	include	"PIC16F887.PBPINC"	; processor specific variable definitions
+'    INCLUDE "Modedefs.Bas" 
+'    INCLUDE "DT_INTS-14.bas"     ' Base Interrupt System
+'    INCLUDE "ReEnterPBP.bas"     ' Include if using PBP interrupts
+
+    @ ERRORLEVEL -306   ; Suppress messages related to Page Boundries.
+;*******************************************************************************
+    #CONFIG
+	__CONFIG    _CONFIG1, _LVP_OFF & _FCMEN_OFF & _IESO_OFF & _BOR_ON & _CPD_OFF & _CP_OFF & _MCLRE_ON & _PWRTE_ON & _WDT_OFF & _FOSC_INTRC_NOCLKOUT 
+	__CONFIG    _CONFIG2, _WRT_OFF & _BOR21V
+	#ENDCONFIG
+	
+    DEFINE OSC 8
+    OSCCON  = %01110000     ; Set PIC16F88 to 4MHz = %01100000 or
+                            ; 8MHz = %01110000
+    TRISA   = %11111111     ; Port A set to inputs
+    TRISB   = %11110111     ; Port B set to inputs, except for Bit 3
+    TRISC   = %11111111     ; Port C set to inputs
+    TRISD   = %11011111     ; Port D set to inputs, except for Bit 5
+    PORTD.5 = 0             ; Set output low
+    ANSEL   = %00000000     ; Set all analog pins to digital
+    ANSELH  = %00000000
+
+;*******************************************************************************
+
+'    SSPSTAT = %00000000             ; Flag bits for the SSP Register
+    SSPCON  = %00101000             ;
+    SSPCON2 = %00000000             ;
+    SSPADD  = 04                    ; Hex04, DEC 04 = BRG VALUE FOR 400KHZ CLOCK, WITH 8MHZ SYSTEM CLOCK.
+                                    ; Hex13, DEC 19 = BRG VALUE FOR 100KHZ CLOCK, WITH 8MHZ SYSTEM CLOCK.
+                                    ; Hex01, DEC 01 = BRG VALUE FOR 500KHZ CLOCK, WITH 8MHZ SYSTEM CLOCK.
+                                    
+    SSPIF       VAR     PIR1.3      ;                                                  
+    ACKSTAT     VAR     SSPCON2.6   ;
+    PEN         VAR     SSPCON2.2   ;
+    SEN         VAR     SSPCON2.0   ;
+
+;*******************************************************************************
+    LED         var     PortB.3      ; LED for flashing
+    SCL         var     PortA.3      ; I2C Clock  PortB.4
+    SDA         var     PortA.2      ; I2C Data   PortB.1
+    RST         VAR     PORTD.5      ; RESET ACTIVE HIGH TRANSLATED LOW THRU FET.
+
+;*******************************************************************************
+    
+    ADDRESS         var BYTE    ; ADDRES OF DEVICE
+    DC              VAR BYTE    ; "DATA OR COMMAND", $40=DATA; $0=COMMAND 
+    OLED_DATA       VAR BYTE    ; DATA BYTE FOR DISPLAY RAM 
+    COM             VAR BYTE    ; COMMANDS BYTE
+    INDEX           VAR BYTE    ; COUNTER VARIABLE
+    X1              VAR BYTE    ; START OF COLUMN(SEGMENTS)COORDINATES = 0 TO 127
+    X2              VAR BYTE    ; END OF COLUMN(SEGMENTS)COORDINATES = 0 TO 127
+    Y1              VAR BYTE    ; START PAGE COORDINATE = 0 TO 7
+    Y2              VAR BYTE    ; END PAGE COORDINATE = 0 TO 7
+    COLUMN_START    VAR BYTE    ;
+    COLUMN_END      VAR BYTE    ;
+    PAGE_START      VAR BYTE    ;
+    PAGE_END        VAR BYTE    ;
+    SCROLL          VAR BYTE    ; COUNTER VARIABLE
+    SCRL_DLY        VAR BYTE    ; COUNTER VARIABLE
+    SPEED           VAR BYTE    ; COUNTER VARIABLE
+    LOOPER          VAR BYTE    ; COUNTER VARIABLE
+    PAGE_TEMP       VAR BYTE    ;  
+    COLUMN_TEMP     VAR BYTE    ;  
+    DATA_RECIEVED   VAR BYTE [22] ;$20 SYSTEM;BANK 3 SYSTEM; BUFFER FOR DATA RECIEVED FROM EXTERNAL SOURCE
+    CHAR_COUNT      VAR BYTE    ; COUNTER VARIABLE
+    CHAR            VAR BYTE  
+    BYTE_COUNT      VAR BYTE    ; COUNTER VARIABLE       
+    I               VAR BYTE    ; COUNTER VARIABLE
+    J               VAR BYTE    ; COUNTER VARIABLE
+    TEMP_COUNT      VAR BYTE    ; COUNTER VARIABLE
+    START_COUNT     VAR BYTE    ; COUNTER VARIABLE
+    END_COUNT       VAR BYTE    ; COUNTER VARIABLE
+    LED_COUNT       VAR BYTE    ; COUNTER VARIABLE
+    COUNTER         VAR BYTE    ; COUNTER VARIABLE
+    MYFLAGS         VAR BYTE    ; FLAGS VARIABLE
+    wsave           VAR BYTE    $70     SYSTEM      ' alternate save location for W 
+    
+'    DATA "CHS_ELECTRONICS"
+    DATA @25," OLED DISPLAY    SSD1306         FIRMWARE        VERSION 5.0"    ;STORE THIS STRING STARTING AT LOCATION 25
+
+
+;*******************************************************************************
+';ASM INTERRUPTS COURTESY OF DARREL TAYLOR.	
+'    ASM
+'INT_LIST  macro    ; IntSource,        Label,  Type, ResetFlag?
+'        INT_Handler   TMR1_INT,  _ToggleLED1,   PBP,  yes 
+'    endm
+'    INT_CREATE               ; Creates the interrupt processor
+'    ENDASM
+    
+'    T1CON = $31                ; Prescaler=8, TMR1ON
+'    @ INT_ENABLE  TMR1_INT     ; enable Timer 1 interrupts
+    
+;*******************************************************************************
+    GOTO START                  ;
+    
+;*******************************************************************************
+'---[TMR1 - interrupt handler]--------------------------------------------------
+'ToggleLED1:
+'    IF LED_COUNT = 0 THEN
+'        TOGGLE LED
+'        LED_COUNT = COUNTER        
+'    ELSE 
+'        LED_COUNT = LED_COUNT - 1
+
+'    ENDIF
+    
+'    @ INT_RETURN 
+    
+;*******************************************************************************
+INIT:
+
+    COM = $AE: GOSUB SEND_COMMAND      ; DISPALY OFF
+    
+    COM = $20: GOSUB SEND_COMMAND      ; Set Memory, HORIZONTAL MODE
+    COM = $00: GOSUB SEND_COMMAND
+    
+    COM = $40: GOSUB SEND_COMMAND      ; DISPLAY START AT 0
+    COM = $A0: GOSUB SEND_COMMAND      ; REMAP 0-127 ----> Mirror display
+    COM = $C0: GOSUB SEND_COMMAND      ; SCAN DIRECTION     
+    
+    COM = $DA: GOSUB SEND_COMMAND      ; COM PINS CONFIGURATION
+    COM = $12: GOSUB SEND_COMMAND      ; BIT4 = 0, Sequential COM pin configuration
+                                       ; BIT5 = 1, Enable COM Left/Right remap
+    
+    COM = $A4: GOSUB SEND_COMMAND      ; DISPLAY ON
+    
+    COM = $A6: GOSUB SEND_COMMAND      ; $A6=NORMAL MODE;$A7=INVERSE MODE
+    
+    COM = $81: GOSUB SEND_COMMAND      ; Set Contrast Control, DOUBLE COMMAND 
+    COM = $FF: GOSUB SEND_COMMAND      ; FULL CONTRAST - TESTING ONLY!
+;================================DEFAULT DISPLAY================================    
+    COM = $DB: GOSUB SEND_COMMAND      ;  SET VCOMH DESELECT LEVEL  ??? 
+    COM = $20: GOSUB SEND_COMMAND      ; DEFAULT = $20
+
+    COM = $8D: GOSUB SEND_COMMAND      ;  SET CHARGE PUMP
+    COM = $14: GOSUB SEND_COMMAND      ; $10 DISABLES CHARGE PUMP, $14 TURNS IT ON
+    PAUSE 500
+;===============================================================================    
+    COM = $AF: GOSUB SEND_COMMAND      ; DISPLAY ON
+
+    RETURN
+;*******************************************************************************
+SCROLL_OFF:
+
+    COM = $2E: GOSUB SEND_COMMAND       ; Deactivate scroll
+    
+    RETURN    
+;*******************************************************************************
+SCROLL_ON:
+
+    COM = $2F: GOSUB SEND_COMMAND       ; Activate scroll
+    
+    RETURN;*******************************************************************************
+NORMAL_DISPLAY:
+
+    COM = $A6: GOSUB SEND_COMMAND       ; $A6=NORMAL MODE;$A7=INVERSE MODE                       ;
+    
+    RETURN    
+;*******************************************************************************
+INVERT_DISPLAY:
+
+    COM = $A7: GOSUB SEND_COMMAND       ; $A6=NORMAL MODE;$A7=INVERSE MODE
+    
+    RETURN    
+;*******************************************************************************
+STOP_I2C:
+
+    PEN = 1                            ;
+    
+    WHILE SSPIF = 0                    ;
+    WEND                               ;
+    SSPIF = 0                          ;
+
+    RETURN
+;*******************************************************************************
+SCROLL_RIGHT:
+
+;   Scrolling Commands-Continuous Vertical and Horizontal Scroll Setup
+    COM = $26: GOSUB SEND_COMMAND      ; Continuous Horizontal Scroll Setup
+    COM = $00: GOSUB SEND_COMMAND      ; Dummy byte
+    COM = 7: GOSUB SEND_COMMAND        ; Define start page address
+    COM = SPEED: GOSUB SEND_COMMAND    ; SCROLL SPEED -Set time interval between each scroll step in terms of frame frequency
+    COM = 7: GOSUB SEND_COMMAND        ; Vertical scrolling offset, e.g. E[5:0]= 01h refer to offset =1 row, E[5:0] =3Fh refer to offset =63 rows
+;   Addressing Setting Commands
+    COM = $00: GOSUB SEND_COMMAND      ; Set Lower Column Start Address for Page Addressing Mode
+    COM = $FF: GOSUB SEND_COMMAND      ; Set UPPER Column Start Address for Page Addressing Mode
+    
+    RETURN    
+;*******************************************************************************
+SCROLL_LEFT_BOTTOM:
+
+;   Scrolling Commands-Continuous Horizontal Scroll Setup
+    COM = $27: GOSUB SEND_COMMAND      ; 27h, X[0]=1, Left Horizontal Scroll
+    COM = $00: GOSUB SEND_COMMAND      ; Dummy byte
+    COM = 7: GOSUB SEND_COMMAND        ; Define start page address
+    COM = SPEED: GOSUB SEND_COMMAND    ; SCROLL SPEED -Set time interval between each scroll step in terms of frame frequency
+    COM = 7: GOSUB SEND_COMMAND        ; Define end page address
+;   Addressing Setting Commands
+    COM = $00: GOSUB SEND_COMMAND      ; Set Lower Column Start Address for Page Addressing Mode
+    COM = $FF: GOSUB SEND_COMMAND      ; Set UPPER Column Start Address for Page Addressing Mode
+    
+    RETURN    
+;*******************************************************************************
+SCROLL_LEFT_ALL:
+
+;   Scrolling Commands-Continuous Horizontal Scroll Setup
+    COM = $27: GOSUB SEND_COMMAND      ; 27h, X[0]=1, Left Horizontal Scroll
+    COM = $00: GOSUB SEND_COMMAND      ; Dummy byte
+    COM = 0: GOSUB SEND_COMMAND        ; Define start page address
+    COM = SPEED: GOSUB SEND_COMMAND    ; SCROLL SPEED -Set time interval between each scroll step in terms of frame frequency
+    COM = 7: GOSUB SEND_COMMAND        ; Define end page address
+;   Addressing Setting Commands
+    COM = $00: GOSUB SEND_COMMAND      ; Set Lower Column Start Address for Page Addressing Mode
+    COM = $FF: GOSUB SEND_COMMAND      ; Set UPPER Column Start Address for Page Addressing Mode
+    
+    RETURN    
+;*******************************************************************************
+SCROLL_UP:
+
+    FOR SCROLL = 0 TO 63
+    COM = $D3: GOSUB SEND_COMMAND      ; Set Display Offset
+    COM = SCROLL: GOSUB SEND_COMMAND   ; Set vertical shift by COM from 0d~63d. The value is reset to 00h after RESET.
+    PAUSE SCRL_DLY                     ;                      
+    NEXT SCROLL                        ;
+    
+    RETURN    
+;*******************************************************************************
+SCROLL_DOWN:
+
+    FOR SCROLL = 63 TO 0 STEP -1       ;
+    COM = $D3: GOSUB SEND_COMMAND      ; Set Display Offset
+    COM = SCROLL: GOSUB SEND_COMMAND   ; Set vertical shift by COM from 0d~63d. The value is reset to 00h after RESET.
+    PAUSE SCRL_DLY                     ;
+    NEXT SCROLL                        ;
+    
+    RETURN    
+;*******************************************************************************
+FLASH_DISPLAY:
+    
+    COM = $AE: GOSUB SEND_COMMAND      ; DISPALY OFF
+    PAUSE 200
+    
+    COM = $AF: GOSUB SEND_COMMAND      ; DISPLAY ON
+    PAUSE 200                          ;
+    
+    RETURN          
+;*******************************************************************************
+;*******************************************************************************
+SEND_COMMAND:
+
+    dc =0                           ;
+
+    SEN = 1                         ;
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+    
+    SSPBUF = ADDRESS                ; %01111000  'ADDRESS         
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+
+    SSPBUF = DC                     ; (D/C#) CONTROL for command instruction
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+ 
+    SSPBUF = COM[0]                 ; COMMAND
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+         
+    RETURN
+;*******************************************************************************
+;*******************************************************************************
+SEND_DATA:
+
+    dc = $40                        ;
+
+    SEN = 1                         ;
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+    
+    SSPBUF = ADDRESS                ; %01111000  ADDRESS         
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+
+    SSPBUF = DC                     ; (D/C#) CONTROL for command instruction
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+ 
+    SSPBUF = OLED_DATA              ; OLED_DATA
+    WHILE SSPIF = 0                 ;
+    WEND                            ;
+    SSPIF = 0                       ;
+
+'    led = 1                         ; For debugging purposes only.
+    
+    RETURN    
+;*******************************************************************************
+SET_ORIGINS:
+
+    COM = $21: GOSUB SEND_COMMAND      ; Set Column Address
+    COM = X1: GOSUB SEND_COMMAND        ; A[6:0] : Column start address, range : 0-127d,
+    COM = X2: GOSUB SEND_COMMAND      ; B[6:0]: Column end address, range : 0-127d
+
+    COM = $22: GOSUB SEND_COMMAND      ; Set Page Address
+    COM = Y1: GOSUB SEND_COMMAND        ; A[2:0] : Page start Address, range : 0-7d
+    COM = Y2: GOSUB SEND_COMMAND        ; B[2:0] : Page end Address, range : 0-7d
+    
+    RETURN    
+;*******************************************************************************
+SET_COL_PAGE:    
+
+    COM = $21: GOSUB SEND_COMMAND             ; Set Column Address
+    COM = COLUMN_START: GOSUB SEND_COMMAND    ; A[6:0] : Column start address, range : 0-127d,
+    COM = COLUMN_END: GOSUB SEND_COMMAND      ; B[6:0]: Column end address, range : 0-127d
+    
+    COM = $22: GOSUB SEND_COMMAND             ;Set Page Address
+    COM = PAGE_START: GOSUB SEND_COMMAND      ; A[2:0] : Page start Address, range : 0-7d
+    COM = PAGE_END: GOSUB SEND_COMMAND        ; B[2:0] : Page end Address, range : 0-7d
+    
+    RETURN    
+;*******************************************************************************
+LOGO:
+                           ; ORIGINS OF PAGE 0
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=0 : Y2=0            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates       
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$1E,$9E,$80,_							
+                $80,$9E,$9E,$80,$80,$9E,$9E,$80,_							
+                $80,$9E,$9E,$80,$80,$9E,$9E,$80,_							
+                $80,$9E,$9E,$80,$80,$9E,$9E,$80,_							
+                $80,$9E,$9E,$80,$80,$9E,$9E,$80,_							
+                $80,$9E,$1E,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA  
+    GOSUB SEND_DATA
+    NEXT INDEX
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 1
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=1 : Y2=1            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates   
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$66,$66,$66,_							
+                $66,$00,$00,$FC,$FE,$FF,$FF,$0F,_							
+                $07,$07,$87,$87,$87,$87,$07,$07,_							
+                $07,$07,$07,$87,$87,$87,$87,$87,_							
+                $87,$87,$87,$87,$87,$07,$07,$07,_							
+                $07,$07,$87,$87,$87,$87,$07,$07,_							
+                $0F,$FF,$FF,$FE,$FC,$00,$00,$66,_							
+                $66,$66,$66,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 2
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=2 : Y2=2            ; Select Page to display
+    GOSUB SET_ORIGINS        ; Transmit coordinates   
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$66,$66,$66,_							
+                $66,$00,$00,$FF,$FF,$FF,$FF,$00,_							
+                $00,$00,$FF,$FF,$FF,$FF,$00,$00,_							
+                $00,$FE,$FF,$FF,$FF,$87,$07,$07,_							
+                $07,$07,$07,$FF,$FF,$FF,$FE,$00,_							
+                $00,$00,$FF,$FF,$FF,$FF,$00,$00,_							
+                $00,$FF,$FF,$FF,$FF,$00,$00,$66,_							
+                $66,$66,$66,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 3
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=3 : Y2=3            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates     
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$66,$66,$66,_							
+                $66,$00,$00,$FF,$FF,$FF,$FF,$00,_							
+                $00,$00,$FF,$FF,$FF,$FF,$3C,$3C,_							
+                $38,$30,$21,$03,$07,$0F,$1F,$3E,_							
+                $7C,$F8,$F0,$E0,$C0,$84,$0C,$1C,_							
+                $3C,$3C,$FF,$FF,$FF,$FF,$00,$00,_							
+                $00,$C1,$C1,$C1,$C1,$00,$00,$66,_							
+                $66,$66,$66,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 4
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=4 : Y2=4            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates     
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$66,$66,$66,_							
+                $66,$00,$00,$FF,$FF,$FF,$FF,$00,_							
+                $00,$00,$FF,$FF,$FF,$FF,$00,$00,_							
+                $00,$7F,$FF,$FF,$FF,$E0,$E0,$E0,_							
+                $E0,$E0,$E1,$FF,$FF,$FF,$7F,$00,_							
+                $00,$00,$FF,$FF,$FF,$FF,$00,$00,_							
+                $00,$FF,$FF,$FF,$FF,$00,$00,$66,_							
+                $66,$66,$66,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 5
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=5 : Y2=5            ; Select Page to display
+    GOSUB SET_ORIGINS        ; Transmit coordinates   
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$66,$66,$66,_							
+                $66,$00,$00,$3F,$7F,$FF,$FF,$F0,_							
+                $E0,$E0,$E1,$E1,$E1,$E1,$E0,$E0,_							
+                $E0,$E0,$E0,$E1,$E1,$E1,$E1,$E1,_							
+                $E1,$E1,$E1,$E1,$E1,$E0,$E0,$E0,_							
+                $E0,$E0,$E1,$E1,$E1,$E1,$E0,$E0,_							
+                $F0,$FF,$FF,$7F,$3F,$00,$00,$66,_							
+                $66,$66,$66,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 6
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=6 : Y2=6            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates      
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$78,$79,$01,_							
+                $01,$79,$79,$01,$01,$79,$79,$01,_							
+                $01,$79,$79,$01,$01,$79,$79,$01,_							
+                $01,$79,$79,$01,$01,$79,$79,$01,_							
+                $01,$79,$79,$01,$01,$79,$79,$01,_							
+                $01,$79,$78,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 7
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=7 : Y2=7            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates      
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$7F,$49,$49,_							
+                $41,$00,$7F,$40,$40,$40,$00,$7F,_							
+                $49,$49,$41,$00,$3E,$41,$41,$22,_							
+                $00,$01,$01,$7F,$01,$00,$7F,$09,_							
+                $19,$66,$00,$3E,$41,$41,$3E,$00,_							
+                $7F,$02,$04,$7F,$00,$41,$41,$7F,_							
+                $41,$00,$3E,$41,$41,$22,$00,$26,_							
+                $49,$49,$32,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+           
+    RETURN
+;******************************************************************************* 
+;******************************************************************************* 
+ASCII:
+
+    SELECT CASE CHAR               ; LOOK AT EACH BYTE RECIEVED AND TRANSLATE
+    
+    CASE 32 ;(SPACE)
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$00,$00,$00,$00,$00,$00,$00,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$00,$00,$00,$00,$00,$00,$00,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 33 ;!
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$00,$00,$FE,$FE,$FE,$00,$00,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$00,$00,$C3,$EF,$C3,$00,$00,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 44 ;,
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$00,$00,$00,$00,$00,$00,$00,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$80,$F0,$70,$00,$00,$00,$00,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 46 ;.
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$00,$00,$00,$00,$00,$00,$00,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$00,$C0,$C0,$00,$00,$00,$00,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 48 ;0		      
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$0E,$86,$CE,$FC,$F8,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$7F,$E6,$C2,$E0,$7F,$3F,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 49 ;1											
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$08,$0C,$0E,$FE,$FE,$00,$00,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$C0,$C0,$C0,$FF,$FF,$C0,$C0,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 50 ;2								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$18,$1C,$0E,$86,$CE,$FC,$78,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FC,$FE,$C7,$C3,$C1,$C0,$C0,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 51 ;3								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$18,$1C,$0E,$86,$CE,$FC,$78,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$30,$70,$E0,$C1,$E3,$7F,$3E,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 52 ;4							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$80,$80,$80,$FE,$FE,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$01,$01,$01,$01,$01,$FF,$FF,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 53 ;5								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$86,$86,$86,$06,$06,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$31,$71,$E1,$C1,$E3,$7F,$3E,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 54 ;6					
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$8E,$86,$8E,$9C,$18,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$7F,$E1,$C1,$E1,$7F,$3F,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 55 ;7							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$06,$06,$06,$86,$E6,$FE,$3E,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$E0,$F8,$3E,$0F,$03,$00,$00,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 56 ;8							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$78,$FC,$CE,$86,$CE,$FC,$78,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3E,$7F,$E3,$C1,$E3,$7F,$3E,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 57 ;9						
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$8E,$86,$8E,$FC,$F8,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$30,$71,$E1,$C1,$E1,$7F,$3F,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 64 ;@							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$E0,$30,$18,$88,$98,$30,$E0,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$60,$C7,$88,$8F,$C8,$0F,$00], OLED_DATA  ;PAGE N+1 DATA
+A:  CASE 65 ;A	
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$8E,$86,$8E,$FC,$F8,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$01,$01,$01,$FF,$FF,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 66 ;B							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$86,$86,$CE,$FC,$78,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$C1,$C1,$E3,$7F,$3E,$00], OLED_DATA
+    CASE 67 ;C							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$0E,$06,$0E,$3C,$38,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$7F,$E0,$C0,$E0,$7E,$3E,$00], OLED_DATA
+    CASE 68 ;D							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$06,$06,$0E,$FC,$F8,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$C0,$C0,$E0,$7F,$3F,$00], OLED_DATA
+    CASE 69 ;E
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$86,$86,$86,$06,$06,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$C1,$C1,$C1,$C0,$C0,$00], OLED_DATA
+    CASE 70 ;F
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$86,$86,$86,$06,$06,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$01,$01,$01,$00,$00,$00], OLED_DATA
+    CASE 71 ;G
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$0E,$06,$0E,$7C,$78,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$7F,$E0,$C6,$E6,$7E,$3E,$00], OLED_DATA
+    CASE 72 ;H
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$80,$80,$80,$FE,$FE,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$01,$01,$01,$FF,$FF,$00], OLED_DATA
+    CASE 73 ;I
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$06,$06,$06,$FE,$FE,$06,$06,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$C0,$C0,$C0,$FF,$FF,$C0,$C0,$00], OLED_DATA
+    CASE 74 ;J
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$00,$00,$00,$00,$00,$FE,$FE,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3C,$7C,$E0,$C0,$E0,$7F,$3F,$00], OLED_DATA
+    CASE 75 ;K
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$80,$E0,$78,$1E,$06,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$01,$07,$1E,$F8,$E0,$00], OLED_DATA
+    CASE 76 ;L
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$00,$00,$00,$00,$00,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$C0,$C0,$C0,$C0,$C0,$00], OLED_DATA
+    CASE 77 ;M
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FC,$38,$F0,$38,$FC,$FE,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$00,$01,$00,$FF,$FF,$00], OLED_DATA
+    CASE 78 ;N
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$78,$E0,$80,$FE,$FE,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$00,$01,$07,$FF,$FF,$00], OLED_DATA
+    CASE 79 ;O
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$0E,$06,$0E,$FC,$F8,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$7F,$E0,$C0,$E0,$7F,$3F,$00], OLED_DATA
+    CASE 80 ;P							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$86,$86,$CE,$FC,$78,$00], OLED_DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$01,$01,$01,$00,$00,$00], OLED_DATA
+    CASE 81 ;Q							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$F8,$FC,$0E,$06,$0E,$FC,$F8,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$7F,$E0,$C8,$F8,$7F,$CF,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 82 ;R							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$86,$86,$CE,$FE,$78,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$FF,$01,$07,$1F,$FC,$F0,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 83 ;S							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$78,$FC,$CE,$86,$0E,$3C,$38,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$38,$78,$E1,$C3,$E7,$7E,$3C,$00], OLED_DATA  ;PAGE N+1 DATA    
+T:  CASE 84 ;T						
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$06,$06,$FE,$FE,$FE,$06,$06,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$00,$00,$FF,$FF,$FF,$00,$00,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 85 ;U								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$00,$00,$00,$FE,$FE,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$3F,$7F,$E0,$C0,$E0,$7F,$3F,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 86 ;V								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$00,$00,$00,$FE,$FE,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$07,$1F,$7C,$E0,$7C,$1F,$07,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 87 ;W								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$FE,$FE,$00,$00,$00,$FE,$FE,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$FF,$7F,$38,$1F,$38,$7F,$FF,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 88 ;X								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$0E,$3E,$F0,$80,$F0,$3E,$0E,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$F0,$FC,$0F,$03,$0F,$FC,$F0,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 89 ;Y							
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$0E,$3E,$F0,$C0,$F0,$3E,$0E,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$00,$00,$FF,$FF,$FF,$00,$00,$00], OLED_DATA  ;PAGE N+1 DATA
+    CASE 90 ;Z								
+        IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [$06,$06,$06,$C6,$F6,$3E,$0E,$00], OLED_DATA  ;PAGE N DATA
+        IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [$F0,$FC,$CF,$C3,$C0,$C0,$C0,$00], OLED_DATA  ;PAGE N+1 DATA
+'        CASE XXX
+'         IF MYfLAGS.0 = 1 THEN LOOKUP INDEX, [   ], OLED_DATA  ;PAGE N DATA
+'         IF MYfLAGS.1 = 1 THEN LOOKUP INDEX, [   ], OLED_DATA  ;PAGE N+1 DATA
+    END SELECT
+    
+    RETURN    
+;******************************************************************************* 
+CLEAR_DISPLAY:
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=0 : Y2=7            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates 
+    FOR J=0 TO 7 
+        FOR I=0 TO 127 
+            OLED_DATA = $00 : GOSUB SEND_DATA  
+        NEXT I
+    NEXT J                             
+
+    RETURN
+;******************************************************************************* 
+'READ_MESSAGE:
+
+'    FOR BYTE_COUNT = 0 TO 21     ; MAX LENGHT OF ARRAY DATA_RECIEVED
+'        IF DATA_RECIEVED[BYTE_COUNT] = $03 THEN 
+'            CHAR_COUNT = BYTE_COUNT
+'            EXIT 
+'        ENDIF
+'    NEXT BYTE_COUNT
+'    X1 = 0                      ; SET COLUMN START COORDINATES
+'    X2 = 7                      ; SET COLUMN END COORDINATES
+'    Y1 = 0                      ; SET PAGE START COORDINATES
+'    Y2 = 0                      ; SET PAGE END COORDINATES
+'    START_COUNT = 0
+'    END_COUNT = 15
+'    TEMP_COUNT = 0
+'LOOP_BACK:   
+'    COLUMN_START = X1
+'    COLUMN_END = X2
+                 
+'    FOR BYTE_COUNT = START_COUNT TO END_COUNT
+'        CHAR =DATA_RECIEVED[BYTE_COUNT]
+'        PAGE_START = Y1
+'        PAGE_END = Y2 
+'        GOSUB ASCII
+'        COLUMN_START = COLUMN_START +8
+'        COLUMN_END = COLUMN_END +8
+'        PAUSE 10
+'        TEMP_COUNT = TEMP_COUNT +1   ; ; 
+'        IF TEMP_COUNT = CHAR_COUNT THEN EXIT  
+'    NEXT BYTE_COUNT 
+'    START_COUNT = START_COUNT +16
+'    END_COUNT = START_COUNT +15
+'    Y1 = Y1 +2
+'    Y2 = Y1  
+'    IF TEMP_COUNT = CHAR_COUNT THEN 
+'        RETURN ;GOTO DONE
+'    ELSE 
+'        GOTO LOOP_BACK
+'    ENDIF
+    
+'    RETURN
+;******************************************************************************* 
+READ_BOOTUP:
+    X1 = 0                      ; SET COLUMN START COORDINATES
+    X2 = 7                      ; SET COLUMN END COORDINATES
+    Y1 = 0                      ; SET PAGE START COORDINATES
+    Y2 = 0                      ; SET PAGE END COORDINATES
+    CHAR_COUNT = 60             ; 60 CHARACTERS WHERE STORED IN EEPROM       
+    START_COUNT = 0
+    END_COUNT = 15
+    TEMP_COUNT = 0
+LOOP_BACK2:   
+    COLUMN_START = X1
+    COLUMN_END = X2
+                 
+    FOR BYTE_COUNT = START_COUNT TO END_COUNT  
+        READ (BYTE_COUNT+25), CHAR   ; READ BOOTUP MESSAGE FROM EEPROM
+        MYfLAGS.0 = 1
+        PAGE_START = Y1
+        PAGE_END = Y2 
+        GOSUB SET_COL_PAGE        ; Transmit coordinates
+        FOR INDEX = 0 TO 7        ; Loop thru the table
+            GOSUB ASCII 
+            GOSUB SEND_DATA       ; Send data from lookup table
+        NEXT INDEX   
+        MYfLAGS.0 = 0
+        MYfLAGS.1 = 1 
+        PAGE_START = Y1 + 1       ; Apply offset to Page for lower half of character
+        PAGE_END = Y2 + 1
+        GOSUB SET_COL_PAGE        ; Transmit coordinates
+        COLUMN_START = COLUMN_START +8
+        COLUMN_END = COLUMN_END +8        
+        FOR INDEX = 0 TO 7        ; Loop thru the table    
+            GOSUB ASCII
+            GOSUB SEND_DATA
+        NEXT INDEX
+        MYfLAGS.1 = 0
+        PAUSE 10                ; DELAY ADDED FOR SPECIAL EFFECTS 
+        TEMP_COUNT = TEMP_COUNT +1
+        IF TEMP_COUNT = CHAR_COUNT THEN EXIT
+    NEXT BYTE_COUNT
+    START_COUNT = START_COUNT +16
+    END_COUNT = START_COUNT +15
+    Y1 = Y1 +2
+    Y2 = Y1  
+    IF TEMP_COUNT = CHAR_COUNT THEN 
+        RETURN ;GOTO DONE
+    ELSE 
+        GOTO LOOP_BACK2
+    ENDIF
+    
+    RETURN    
+;******************************************************************************* 
+IMAGE:
+                           ; ORIGINS OF PAGE 0
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=0 : Y2=0            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates       
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$10,$10,$10,$10,$10,$10,$90,$90,_							
+                    $90,$90,$90,$90,$90,$90,$90,$90,_							
+                    $90,$90,$90,$90,$90,$90,$90,$90,_							
+                    $90,$90,$90,$90,$90,$90,$90,$90,_							
+                    $90,$90,$90,$90,$90,$10,$10,$10,_							
+                    $10,$10,$10,$10,$10,$10,$10,$10,_							
+                    $10,$10,$10,$10,$10,$10,$10,$20,_							
+                    $40,$80,$00,$00,$00,$00,$00,$00,_							
+                    $E0,$10,$10,$10,$E0,$40,$40,$40,_							
+                    $40,$40,$80,$00,$00,$00,$00,$00,_							
+                    $38,$44,$47,$44,$38,$00,$00,$38,_							
+                    $44,$47,$44,$38,$00,$00,$38,$44,_							
+                    $47,$44,$38,$00,$00,$38,$44,$44,_							
+                    $44,$38,$10,$10,$10,$10,$10,$10,_							
+                    $10,$10,$10,$10,$10,$10,$10,$10,_							
+                    $10,$10,$10,$10,$10,$10,$10,$10],OLED_DATA  
+    GOSUB SEND_DATA
+    NEXT INDEX
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 1
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=1 : Y2=1            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates   
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$12,$12,$12,$22,$C2,$01,$00,$00,_							
+                    $38,$44,$C4,$44,$38,$00,$00,$38,_							
+                    $44,$C4,$44,$38,$00,$00,$38,$44,_							
+                    $C4,$44,$38,$00,$00,$38,$44,$C4,_							
+                    $44,$38,$00,$00,$00,$01,$02,$84,_							
+                    $F8,$80,$00,$00,$00,$00,$00,$0E,_							
+                    $11,$11,$11,$0E,$04,$04,$04,$04,_							
+                    $08,$10,$21,$42,$84,$88,$90,$90,_							
+                    $90,$91,$91,$91,$90,$90,$90,$90,_							
+                    $90,$90,$90,$91,$92,$92,$92,$92,_							
+                    $92,$92,$92,$92,$92,$92,$92,$92,_							
+                    $92,$92,$92,$92,$92,$92,$92,$92,_							
+                    $92,$92,$92,$92,$92,$92,$92,$92,_							
+                    $92,$92,$92,$92,$92,$92,$12,$12,_							
+                    $12,$12,$12,$12,$12,$12,$12,$12,_							
+                    $12,$12,$12,$12,$12,$12,$12,$12],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 2
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=2 : Y2=2            ; Select Page to display
+    GOSUB SET_ORIGINS        ; Transmit coordinates   
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$0E,$11,$11,$11,$0E,$00,_							
+                    $00,$00,$03,$04,$08,$08,$08,$08,_							
+                    $10,$23,$C4,$08,$10,$E0,$00,$00,_							
+                    $FF,$00,$00,$E0,$10,$08,$04,$03,_							
+                    $00,$00,$00,$00,$00,$00,$07,$08,_							
+                    $08,$08,$07,$00,$00,$00,$00,$00,_							
+                    $00,$00,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$00,$00,$00,$00,$00,$00,_							
+                    $70,$88,$88,$88,$70,$00,$00,$70,_							
+                    $88,$88,$88,$70,$00,$00,$70,$88,_							
+                    $88,$88,$70,$00,$00,$70,$88,$88,_							
+                    $88,$70,$00,$00,$00,$00,$01,$02,_							
+                    $04,$08,$10,$10,$10,$38,$44,$44,_							
+                    $44,$38,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 3
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=3 : Y2=3            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates     
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$10,$10,$10,$10,$10,$10,$10,$10,_							
+                    $10,$90,$90,$90,$90,$90,$90,$FE,_							
+                    $FE,$06,$07,$E6,$E6,$E7,$E6,$E6,_							
+                    $E7,$E6,$E6,$07,$06,$FE,$FE,$90,_							
+                    $90,$90,$90,$90,$90,$90,$90,$90,_							
+                    $90,$90,$90,$90,$90,$90,$90,$90,_							
+                    $10,$10,$10,$10,$10,$10,$7C,$7C,_							
+                    $7C,$7C,$7C,$00,$00,$00,$7C,$7C,_							
+                    $7C,$7C,$7C,$10,$10,$38,$44,$44,_							
+                    $44,$38,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$FF,$00,$00,$00,$00,$00,_							
+                    $00,$FF,$00,$00,$00,$00,$00,$00,_							
+                    $FF,$00,$00,$00,$00,$00,$00,$FF,_							
+                    $00,$00,$00,$00,$38,$44,$44,$44,_							
+                    $38,$10,$10,$10,$10,$10,$10,$10,_							
+                    $10,$10,$10,$10,$10,$10,$10,$10],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 4
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=4 : Y2=4            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates     
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$08,$08,$08,$08,$08,$08,$84,$42,_							
+                    $21,$10,$08,$04,$84,$44,$24,$FF,_							
+                    $FF,$80,$80,$9F,$9F,$9F,$9F,$9F,_							
+                    $9F,$9F,$9F,$80,$80,$FF,$FF,$24,_							
+                    $24,$24,$24,$24,$24,$24,$24,$24,_							
+                    $44,$84,$04,$04,$08,$10,$20,$40,_							
+                    $81,$02,$04,$08,$08,$08,$3E,$3E,_							
+                    $3E,$3E,$3E,$00,$00,$00,$3E,$3E,_							
+                    $3E,$3E,$3E,$08,$08,$1C,$22,$22,_							
+                    $22,$1C,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$FF,$00,$00,$00,$00,$00,_							
+                    $00,$FF,$00,$00,$00,$00,$00,$00,_							
+                    $FF,$00,$00,$00,$00,$00,$00,$FF,_							
+                    $00,$00,$00,$00,$1C,$22,$22,$22,_							
+                    $1C,$08,$08,$08,$08,$08,$08,$08,_							
+                    $08,$08,$08,$08,$08,$08,$08,$08],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 5
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=5 : Y2=5            ; Select Page to display
+    GOSUB SET_ORIGINS        ; Transmit coordinates   
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$04,$04,$04,$04,$02,$01,$00,$00,_							
+                    $00,$00,$78,$78,$7F,$78,$78,$01,_							
+                    $01,$01,$81,$C1,$C1,$E1,$D1,$C9,_							
+                    $C7,$C1,$C1,$FF,$C1,$C1,$81,$00,_							
+                    $00,$00,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$01,$02,$04,$08,$10,$20,_							
+                    $40,$81,$02,$04,$04,$04,$9F,$9F,_							
+                    $9F,$9F,$9F,$00,$00,$00,$9F,$9F,_							
+                    $9F,$9F,$9F,$04,$04,$0E,$91,$91,_							
+                    $91,$0E,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$FF,$00,$00,$00,$00,$00,_							
+                    $00,$FF,$00,$00,$00,$00,$00,$00,_							
+                    $FF,$00,$00,$00,$00,$00,$00,$FF,_							
+                    $00,$00,$00,$00,$0E,$91,$91,$91,_							
+                    $0E,$04,$04,$04,$04,$04,$04,$04,_							
+                    $04,$04,$04,$04,$04,$04,$04,$04],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 6
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=6 : Y2=6            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates      
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$02,$02,$02,$02,$04,$08,$08,$08,_							
+                    $08,$08,$3C,$3C,$3C,$3C,$3C,$00,_							
+                    $00,$00,$07,$0F,$0F,$0F,$0F,$0F,_							
+                    $0F,$0F,$0F,$0F,$0F,$0F,$07,$00,_							
+                    $00,$00,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$00,$00,$00,$00,$00,$00,_							
+                    $00,$00,$01,$02,$02,$02,$0F,$0F,_							
+                    $1F,$2F,$4F,$80,$80,$80,$8F,$8F,_							
+                    $8F,$8F,$8F,$82,$82,$87,$88,$88,_							
+                    $88,$87,$80,$80,$80,$80,$80,$40,_							
+                    $20,$10,$0F,$00,$00,$00,$00,$1C,_							
+                    $22,$23,$22,$1C,$00,$00,$1C,$22,_							
+                    $23,$22,$1C,$00,$00,$1C,$22,$23,_							
+                    $22,$1C,$00,$00,$07,$08,$08,$08,_							
+                    $07,$02,$02,$02,$02,$02,$02,$02,_							
+                    $02,$02,$02,$02,$02,$02,$02,$02],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+;-------------------------------------------------------------------------------
+                           ; ORIGINS OF PAGE 7
+    X1=0 : X2=127          ; Select columns(segments) to display
+    Y1=7 : Y2=7            ; Select Page to display
+    GOSUB SET_ORIGINS         ; Transmit coordinates      
+    FOR INDEX = 0 TO 127
+        LOOKUP INDEX,[$00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$7F,$49,$49,_							
+                $41,$00,$7F,$40,$40,$40,$00,$7F,_							
+                $49,$49,$41,$00,$3E,$41,$41,$22,_							
+                $00,$01,$01,$7F,$01,$00,$7F,$09,_							
+                $19,$66,$00,$3E,$41,$41,$3E,$00,_							
+                $7F,$02,$04,$7F,$00,$41,$41,$7F,_							
+                $41,$00,$3E,$41,$41,$22,$00,$26,_							
+                $49,$49,$32,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00,_							
+                $00,$00,$00,$00,$00,$00,$00,$00],OLED_DATA
+    GOSUB SEND_DATA
+    NEXT INDEX
+    
+           
+    RETURN
+;******************************************************************************* 
+;******************************************************************************* 
+;******************************************************************************* 
+;******************************************************************************* 
+;******************************************************************************* 
+;******************************************************************************* 
+START:
+
+    CLEAR                        ;
+    PAGE_START = 0               ;
+    SPEED = 7                    ;
+    PAGE_END = $07               ;
+        
+    SCRL_DLY = 20                ;
+    address = $78                ; Address = $78 if SA0 = 0, $7A if SA0 = 1. X/Y/Z = $3C, Display = $78,
+J1:
+    PAUSE 500                    ; Wait half a second for the display power to settle.      
+    GOSUB INIT  
+    
+MAIN:    
+    GOSUB CLEAR_DISPLAY
+    PAUSE 500
+    GOSUB READ_BOOTUP
+    PAUSE 3000   
+    GOSUB CLEAR_DISPLAY
+    PAUSE 10
+    GOSUB LOGO
+    PAUSE 1000
+    FOR LOOPER = 0 TO 5          ;
+        GOSUB FLASH_DISPLAY      ;
+    NEXT LOOPER                  ;
+    PAUSE 1000                   ;
+    GOSUB IMAGE  
+    PAUSE 1000                   ;                        
+    GOSUB SCROLL_UP              ;
+    PAUSE 500
+    GOSUB SCROLL_DOWN            ;
+    PAUSE 500 
+    GOSUB SCROLL_LEFT_BOTTOM            ;
+    GOSUB SCROLL_ON              ;
+    PAUSE 2250                   ;
+    GOSUB SCROLL_OFF             ;
+    PAUSE 500
+    GOSUB SCROLL_RIGHT           ;
+    GOSUB SCROLL_ON              ;
+    PAUSE 2250                   ;
+    GOSUB SCROLL_OFF             ;
+    PAUSE 500           
+    GOSUB SCROLL_LEFT_ALL            ;
+    GOSUB SCROLL_ON              ;
+    PAUSE 4500                   ;
+    GOSUB SCROLL_OFF 
+    PAUSE 500                   ;
+    FOR LOOPER = 0 TO 5
+        GOSUB INVERT_DISPLAY        ;
+        PAUSE 500                   ;
+        GOSUB NORMAL_DISPLAY         ;
+        PAUSE 500                   ;
+    NEXT LOOPER                  ;
+    PAUSE 500
+    
+    GOTO MAIN                   ;    
+;*******************************************************************************
+    END							                                          
+
+
+
+
