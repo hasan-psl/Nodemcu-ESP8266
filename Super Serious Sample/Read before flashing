@@ -1,0 +1,1 @@
+Don't forget to change the default Wi-Fi SSID and Password in the code. Otherwise, your ESP board will be stuck at "Connecting to WiFi..." screen.
