@@ -79,17 +79,15 @@ After installing all the necessary libraries, Restart `Arduino IDE`
 Now, you have proper environment to code and flash your `Nodemcu ESP8266`
 # Demo
 
-I created some example codes for testing Nodemcu ESP8266 with it's built-in 0.96 inch OLED display. Feel free to test them in your development board.
+I created some example programs for testing Nodemcu ESP8266 with it's built-in 0.96 inch OLED display. Feel free to test them in your development board.
 
-I am working on an internet clock program. This program will connect to your Wi-Fi and use a NTP client to fetch current date and time. It will fetch GMT +6 (You can change later) and convert 24h time format to 12h with amPM function. Then, it will show the date and time as a digital clock on the OLED display.
+One of them will connect to your Wi-Fi and use a NTP client to fetch current date and time. It will fetch GMT +6 (You can change later) and convert 24h time format to 12h with amPM function. Then, it will show the date and time as a digital clock on the OLED display. Currently, I have made 2 versions of this program. First one shows just the time and date. Second version has a cute cat in it. If you wanna see the cat, you have to flash the program and see for yourself. 😉
 
-Currently, I have 2 versions of this program.
-
-First one shows just the time and date. Second version has a cute cat in it. If you wanna see the cat, you have to flash the program and see for yourself. 😉
+I wrote description in every program. Like, what it is, what it does and every bits of code has proper comments.
 
 All of my current and future demo codes can be found at the `Super Serious Sample` folder.
 
-If you like my stuff, you can `Fork`🍴 and `Star` ⭐ my repo.
+If you like my stuff and want to test and develop further, you can `Fork`🍴 and `Star` ⭐ my repo.
 
 Thanks for visiting.💚
 # Documentation
