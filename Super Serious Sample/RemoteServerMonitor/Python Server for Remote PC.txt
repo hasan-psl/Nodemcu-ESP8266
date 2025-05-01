@@ -1,0 +1,211 @@
+I am assuming your remote server is a Debian based Linux Server. If your remote server is a Windows machine, then manually install python for your machine, then use pip to install "flask" and "psutil". eg. 'pip install flask psutil'. It should work the same.
+
+⌂ Step 1: Install Required Python Packages
+Open a terminal on your Linux server and run:
+
+	sudo apt update
+	sudo apt install python3-pip -y
+	pip3 install flask psutil
+
+⌂ Step 2: Save This as stats_server.py (or_any_other-name.py)
+
+from flask import Flask, jsonify
+import psutil
+import time
+
+app = Flask(__name__)
+
+prev_net = psutil.net_io_counters()
+prev_time = time.time()
+
+@app.route('/stats')
+def get_stats():
+    global prev_net, prev_time
+
+    # CPU and RAM usage
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    ram_percent = psutil.virtual_memory().percent
+
+    # Power draw (if supported)
+    try:
+        # Works on many systems with upower or acpi tools
+        import subprocess
+        result = subprocess.check_output(["upower", "-i", "/org/freedesktop/UPower/devices/line_power_AC"])
+        result = result.decode()
+        power_draw = None
+        for line in result.split("\n"):
+            if "energy-rate:" in line:
+                power_draw = float(line.split(":")[1].strip().split()[0])  # in W
+                break
+        if power_draw is None:
+            power_draw = 0.0
+    except:
+        power_draw = 0.0
+
+    # Network usage
+    current_net = psutil.net_io_counters()
+    current_time = time.time()
+
+    duration = current_time - prev_time
+    bytes_sent = current_net.bytes_sent - prev_net.bytes_sent
+    bytes_recv = current_net.bytes_recv - prev_net.bytes_recv
+
+    mb_sent = (bytes_sent / duration) / (1024 * 1024)  # Mbps-ish
+    mb_recv = (bytes_recv / duration) / (1024 * 1024)
+
+    prev_net = current_net
+    prev_time = current_time
+
+    return jsonify({
+        "cpu": cpu_percent,
+        "ram": ram_percent,
+        "power": round(power_draw, 2),
+        "net_up": round(mb_sent * 8, 1),    # Convert MBps to Mbps
+        "net_down": round(mb_recv * 8, 1)
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+
+⌂ Step 3: Run It
+
+	python3 stats_server.py
+
+You should see:
+
+	 * Running on http://0.0.0.0:5000 (Press CTRL+C to quit)
+
+Then from your browser on the same Wi-Fi, hit:
+
+	http://<your_remote_server_ip>:5000/stats
+
+You’ll get JSON like:
+
+	{
+	  "cpu": 24.5,
+	  "ram": 42.1,
+	  "power": 13.4,
+	  "net_up": 1.2,
+	  "net_down": 3.8
+	}
+
+🧪 Test It:
+Open that URL from another device (phone or ESP)
+
+Confirm that JSON is showing.
+
+You have basically done the server side of work. Now you can move on to the ESP side of the programming.
+
+But, keep in mind, your ESP will get the server data, as long as you keep your Linux/Windows/SSH terminal open. From which you started the stats_server.py. If you close the terminal, your python server WILL STOP.
+
+——————————————————————————————————————— Debian based Linux only ———————————————————————————————————————
+
+To prevent this problem, my suggestion is to run the server as a systemd service. Again, this is optional. There is the proper way to do it. Tutorial is down below.
+
+This is the troubleshooting section:
+
+Debian and Ubuntu-based distros (like Linux Mint) have recently added protections to stop system-wide pip3 install by default — to avoid accidental mess-ups.
+Here is the solution:
+
+1. Install venv if needed:
+
+	sudo apt install python3-venv -y
+
+2. Create a virtual environment:
+
+	python3 -m venv ~/flaskstats-env
+
+3. Activate it:
+
+	source ~/flaskstats-env/bin/activate
+
+4. NOW install Flask and psutil inside it:
+
+	pip install flask psutil
+
+5. Run the server:
+
+	python stats_server.py
+
+Now it’s isolated, clean, no system pollution.
+
+Whenever you reboot or close terminal, just run:
+
+	source ~/flaskstats-env/bin/activate
+
+
+Hacky Shortcut to bypass venv method (Not Recommended, but Works Fast)
+If you’re a "just-make-it-work" mode guy, just run this to install flask and psutil systemwide:
+
+	pip3 install flask psutil --break-system-packages
+
+But this messes with system Python packages and isn’t future-proof. So only use if you're desperate.
+
+
+Now, let's make a systemd service to make the python server AutoStart in the background with the system.
+
+1. Make sure your stats_server.py file is in the home directory. eg. /home/saitama/stats_server.py
+
+2. Assuming you created your venv at ~/flaskstats-env, do this:
+
+	readlink -f ~/flaskstats-env/bin/python
+
+You'll get something like:
+
+	/home/user_name/flaskstats-env/bin/python
+or,
+	/usr/bin/python3.12
+
+3. Create a systemd Service File
+
+	sudo nano /etc/systemd/system/flaskstats.service
+
+Paste this in:
+
+[Unit]
+Description=Saitama's Flask Stats Server
+After=network.target
+
+[Service]
+User=saitama
+WorkingDirectory=/home/saitama
+ExecStart=/home/saitama/flaskstats-env/bin/python /home/saitama/stats_server.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
+
+✏️ Replace saitama and the paths with your actual username & locations, if they’re different.
+Press Ctrl+O to create and save the file. Press Enter to confirm the service file name. Press Ctrl+X to exit the editor.
+
+
+4. Reload systemd and Enable the Service
+
+	sudo systemctl daemon-reexec
+	sudo systemctl daemon-reload
+	sudo systemctl enable flaskstats.service
+	sudo systemctl start flaskstats.service
+
+Run them one by one.
+
+5. Check if it’s alive:
+
+	sudo systemctl status flaskstats.service
+
+You should see something like:
+
+	Active: active (running)
+
+You exit by Ctrl+C
+
+If anything breaks, check logs with:
+
+	journalctl -u flaskstats.service -f
+
+
+⌂ Summery:
+
+	• It’ll auto-start every time your system boots
+
+	• It runs inside your virtual environment
